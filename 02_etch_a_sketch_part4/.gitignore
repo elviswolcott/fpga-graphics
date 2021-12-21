@@ -1,0 +1,7 @@
+*.jou
+*.log
+*.html
+.Xil/*
+*.checkpoint
+*.xml
+*.bit
