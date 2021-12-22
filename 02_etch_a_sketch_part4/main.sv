@@ -39,6 +39,16 @@ parameter VRAM_L = BUFFER_WIDTH * BUFFER_HEIGHT;
 parameter VRAM_W = 8;
 parameter ILI9341_color_t VRAM_CLEAR = WHITE; // clear base color
 
+parameter LAYER_0_SPEED = 1; // pixels/update
+parameter LAYER_0_PERIOD = 16; // cycles/update
+
+parameter LAYER_1_SPEED = 1; // pixels/update
+parameter LAYER_1_PERIOD = 32; // cycles/update
+
+parameter LAYER_2_SPEED = 1; // pixels/update
+parameter LAYER_2_PERIOD = 128; // cycles/update
+
+parameter BG_COLOR = 8'hc9;
 
 //Module I/O and parameters
 input wire sysclk;
@@ -58,11 +68,9 @@ output wire backlight, display_rstb, data_commandb;
 output wire display_csb, spi_clk, spi_mosi;
 input wire spi_miso;
 
-ILI9341_color_t vram_wr_color;
+logic positive_direction; // positive direction being to the right
 
-// Pixel color to draw with
-ILI9341_color_t draw_color;
-//always_comb draw_color = BLACK; // Default color to black
+ILI9341_color_t vram_wr_color;
 
 // Create a faster clock using internal PLL hardware.
 `ifdef SIMULATION
@@ -90,40 +98,51 @@ MMCME2_BASE_inst (
 // End
 `endif // SIMULATION
 
-
 // Touch signals
 touch_t touch0, touch1;
 
 // Video RAM signals
 wire [$clog2(VRAM_L)-1:0] vram_rd_addr;
-logic [$clog2(VRAM_L)-1:0] vram_wr_addr, vram_clear_counter, image_rd_addr;
+logic [$clog2(VRAM_L)-1:0] vram_wr_addr, vram_clear_counter;
 logic vram_wr_ena;
 wire [7:0] vram_rd_data;
 logic [7:0] vram_wr_data;
-enum logic {S_VRAM_CLEARING, S_VRAM_ACTIVE } vram_state;
+enum logic {S_VRAM_UPDATING, S_VRAM_ACTIVE } vram_state;
 
 // the vram/frame buffer is what the display controller draws from
 // we can paint into it and trust that it will show up on screen
-// it is ordered by collumn
-block_ram #(.W(VRAM_W), .L(VRAM_L), .INIT("memories/layer0.memh")) VRAM(
+// it is ordered by column
+block_ram #(.W(VRAM_W), .L(VRAM_L)) VRAM(
   .clk(clk), .rd_addr(vram_rd_addr), .rd_data(vram_rd_data),
   .wr_ena(vram_wr_ena), .wr_addr(vram_wr_addr), .wr_data(vram_wr_data)
 );
 
-wire [7:0] image_data; // data out from ROM
-// shadows the wr_addr for reseting 
-block_rom #(.INIT("memories/dots.memh"), .W(VRAM_W), .L(VRAM_L)) IMAGE_ROM (
-  .clk(clk), .addr(image_rd_addr), .data(image_data)
+wire [7:0] layer_0_data, layer_1_data, layer_2_data; // data out from ROM
+logic [$clog2(LAYER_L)-1:0] layer_0_rd_addr, layer_1_rd_addr, layer_2_rd_addr;
+// layer data
+block_rom #(.INIT("memories/layer0.memh"), .W(VRAM_W), .L(LAYER_L)) LAYER_0 (
+  .clk(clk), .addr(layer_0_rd_addr), .data(layer_0_data)
 );
 
-debouncer #(.BOUNCE_TICKS(8)) DEBOUNCER(sysclk, rst, buttons[1], leds[0]);
+block_rom #(.INIT("memories/layer1.memh"), .W(VRAM_W), .L(LAYER_L)) LAYER_1 (
+  .clk(clk), .addr(layer_1_rd_addr), .data(layer_1_data)
+);
 
-led_example #(.BOUNCE_TICKS(8)) LED_STATE_MACHINE(sysclk, rst, buttons[1], rgb_inv[0], rgb_inv[1], rgb_inv[2], draw_color);
+block_rom #(.INIT("memories/layer2.memh"), .W(VRAM_W), .L(LAYER_L)) LAYER_2 (
+  .clk(clk), .addr(layer_2_rd_addr), .data(layer_2_data)
+);
 
 logic [2:0] rgb_inv;
 always_comb rgb = ~rgb_inv;
 
-logic [$clog2(DISPLAY_WIDTH)-1:0] vram_x; // pixel to paint
+wire [7:0] draw_color, bg_comp, fg_comp;
+
+// composite layers (just muxes)
+composite BACKGROUND_COMPOSITOR(.color_top(layer_2_data), .color_bottom(BG_COLOR), .composited(bg_comp));
+composite FOREGROUND_COMPOSITOR(.color_top(layer_0_data), .color_bottom(layer_1_data), .composited(fg_comp));
+composite FINAL_COMPOSITOR(.color_top(fg_comp), .color_bottom(bg_comp), .composited(draw_color));
+
+logic [$clog2(DISPLAY_WIDTH)-1:0] vram_x; // pixel to paint into buffer
 logic [$clog2(DISPLAY_HEIGHT)-1:0] vram_y;
 
 // Put appropriate RAM clearing logic here!
@@ -133,15 +152,15 @@ always_ff @(posedge clk) begin : ramClear
     vram_clear_counter <= 0; // start over counter
     vram_x <= 0;
     vram_y <= 0;
-    vram_state <= S_VRAM_CLEARING;
+    vram_state <= S_VRAM_UPDATING;
   end
   else if(vram_clear_counter >= VRAM_L) begin
     // set state to stop clearing
-    vram_state <= S_VRAM_ACTIVE;
+    //vram_state <= S_VRAM_ACTIVE;
   end
   // counter logic
-  if(vram_state == S_VRAM_CLEARING) begin
-    vram_clear_counter++; // add new time to be address 
+  if(vram_state == S_VRAM_UPDATING) begin
+    vram_clear_counter++; // update position in frame
     // x and y helps do address translation
     if(vram_x < ((DISPLAY_WIDTH>>1)-1)) begin
       vram_x <= vram_x + 1;
@@ -151,28 +170,96 @@ always_ff @(posedge clk) begin : ramClear
         vram_y <= vram_y + 1;
       end else begin
         vram_y <= 0;
-        vram_state <= S_VRAM_ACTIVE;
+        // permamently stay in the painting state
+        //vram_state <= S_VRAM_ACTIVE;
       end
     end
+  end
+end
+
+// we depend on overflow for this to work
+// this much slower clock can be used for updating layer positions
+// we still keep it way too fast as that we can get finer granularity on rates
+logic [16:0] slow_down;
+logic [$clog2(LAYER_0_PERIOD):0] layer_0_counter;
+logic [$clog2(LAYER_1_PERIOD):0] layer_1_counter;
+logic [$clog2(LAYER_2_PERIOD):0] layer_2_counter;
+// offsets within frames
+logic [$clog2(LAYER_WIDTH):0] layer_0_offset, layer_1_offset, layer_2_offset;
+
+always_ff @( posedge clk ) begin : updatePositions
+  if (rst) begin
+    slow_down <= 0;
+    layer_0_counter <= 0;
+    layer_0_offset <= 0;
+    layer_1_counter <= 0;
+    layer_1_offset <= 0;
+    layer_2_counter <= 0;
+    layer_2_offset <= 0;
+  end
+  slow_down <= slow_down + 1;
+  if (slow_down == 0) begin
+    // update the counters and offsets
+    if (touch0.valid) begin
+      // move backgrounds when touch valid on either side
+      positive_direction = (touch0.y>=(DISPLAY_HEIGHT >> 1)) ? 1 : 0;
+      leds[1] <= 1;
+      if (layer_0_counter == LAYER_0_PERIOD - 1) begin
+        layer_0_counter <= 0;
+        // just to be safe using modulo to prevent weird overflow
+        if (positive_direction) begin
+          layer_0_offset <= (layer_0_offset + (LAYER_0_SPEED)) % LAYER_WIDTH;
+        end else begin
+          layer_0_offset <= (layer_0_offset - (LAYER_0_SPEED)) % LAYER_WIDTH;
+        end
+      end else begin
+        layer_0_counter <= layer_0_counter + 1;
+      end
+      // this could be modularized better
+      if (layer_1_counter == LAYER_1_PERIOD - 1) begin
+        layer_1_counter <= 0;
+        // just to be safe using modulo to prevent weird overflow
+        if (positive_direction) begin
+          layer_1_offset <= (layer_1_offset + (LAYER_1_SPEED)) % LAYER_WIDTH;
+        end else begin
+          layer_1_offset <= (layer_1_offset - (LAYER_1_SPEED)) % LAYER_WIDTH;
+        end
+      end else begin
+        layer_1_counter <= layer_1_counter + 1;
+      end
+
+      if (layer_2_counter == LAYER_2_PERIOD - 1) begin
+        layer_2_counter <= 0;
+        // just to be safe using modulo to prevent weird overflow
+        if (positive_direction) begin
+          layer_2_offset <= (layer_2_offset + (LAYER_2_SPEED)) % LAYER_WIDTH;
+        end else begin
+          layer_2_offset <= (layer_2_offset - (LAYER_2_SPEED)) % LAYER_WIDTH;
+        end
+      end else begin
+        layer_2_counter <= layer_2_counter + 1;
+      end
+    end else begin
+      leds[1] <= 0;
+    end
+    // blink to show the rate it's updating
+    leds[0] <= positive_direction;
   end
 end
 
 // Draw on or clear the screen based on vram_state
 always_comb begin : vramClearDraw
   // clear the screen
-  if(vram_state == S_VRAM_CLEARING) begin
-    //vram_wr_ena = 1;
-    vram_wr_ena = 0;
-    //image_rd_addr = vram_x + (vram_y * (DISPLAY_WIDTH >> 1));
-    image_rd_addr = vram_y + (vram_x * (DISPLAY_HEIGHT >> 1));
-    vram_wr_addr = vram_y + (vram_x * (DISPLAY_HEIGHT >> 1));
-    //vram_wr_data = image_data;
-  end
-  else if (touch0.valid) begin
-    // write on screen when touch detected
+  if(vram_state == S_VRAM_UPDATING) begin
     vram_wr_ena = 1;
-    vram_wr_addr = touch0.x + (touch0.y*DISPLAY_WIDTH);
-    //vram_wr_color = draw_color;
+    //vram_wr_ena = 0;
+    //layer_0_rd_addr = vram_x + (vram_y * (DISPLAY_WIDTH >> 1));
+    // offset read location to shift in image
+    layer_0_rd_addr = ((layer_0_offset * LAYER_HEIGHT) + vram_clear_counter) % LAYER_L;
+    layer_1_rd_addr = ((layer_1_offset * LAYER_HEIGHT) + vram_clear_counter) % LAYER_L;
+    layer_2_rd_addr = ((layer_2_offset * LAYER_HEIGHT) + vram_clear_counter) % LAYER_L;
+    vram_wr_addr = vram_clear_counter;
+    vram_wr_data = draw_color;
   end
 end
 
@@ -187,26 +274,6 @@ ili9341_display_controller ILI9341(
   .vram_rd_data(vram_rd_data)
 );
 
-// Some useful timing signals. //TODO@(avinash) - move to a different module or use a generate to save space here...
-wire step_1Hz;
-pulse_generator #(.N($clog2(CLK_HZ/1))) PULSE_1Hz (
-  .clk(clk), .rst(rst), .ena(1'b1), .out(step_1Hz),
-  .ticks(CLK_HZ/1)
-);
-
-wire step_10Hz;
-pulse_generator #(.N($clog2(CLK_HZ/10))) PULSE_10Hz (
-  .clk(clk), .rst(rst), .ena(1'b1), .out(step_10Hz),
-  .ticks(CLK_HZ/10)
-);
-
-wire step_100Hz;
-pulse_generator #(.N($clog2(CLK_HZ/100))) PULSE_100Hz (
-  .clk(clk), .rst(rst), .ena(1'b1), .out(step_100Hz),
-  .ticks(CLK_HZ/100)
-);
-
-
 // capacitive touch controller
 ft6206_controller #(.CLK_HZ(CLK_HZ), .I2C_CLK_HZ(100_000)) FT6206(
   .clk(clk), .rst(rst), .ena(1'b1), // step_100Hz),
@@ -220,33 +287,8 @@ always @(posedge clk) begin
   if(rst) begin
     led_pwm0 <= 0;
     led_pwm1 <= 0;
-  end else begin
-    if(touch0.valid) begin
-      led_pwm0 <= touch0.x;
-      led_pwm1 <= touch0.y;
-    end
-    else begin
-      led_pwm0 <= 0;
-      led_pwm0 <= 1;
-    end
   end
 end
-
-always_comb begin : blockName
-  leds[1] = buttons[1];
-end
-
-/*
-pwm #(.N(PWM_WIDTH)) PWM_LED0 (
-  .clk(clk), .rst(rst), .ena(1'b1), .step(1'b1), .duty(led_pwm0),
-  .out(leds[0])
-);
-
-pwm #(.N(PWM_WIDTH)) PWM_LED1 (
-  .clk(clk), .rst(rst), .ena(1'b1), .step(1'b1), .duty(led_pwm1),
-  .out(leds[1])
-);
-*/
 
 endmodule
 

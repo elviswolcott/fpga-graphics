@@ -1,0 +1,9 @@
+*.jou
+*.log
+*.html
+.Xil/*
+*.checkpoint
+*.xml
+*.bit
+.vscode
+__pycache__

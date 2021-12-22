@@ -104,31 +104,96 @@ def generate_ili9341_rom(fn="memories/ili9341_init.memh"):
 
 MASK_5_BITS = 0xF8
 MASK_6_BITS = 0xFC
+MASK_3_BITS = 0xE0
+MASK_2_BITS = 0xC0
 
 # convert 24bit hex colors into 16bit format, RGB565
 def convert_24_to_16(color):
     r,g,b = color
     r_data = (r & MASK_5_BITS) << 8
     g_data = (g & MASK_6_BITS) << 3
-    b_data = (b & MASK_5_BITS) >> 3;
+    b_data = (b & MASK_5_BITS) // 8
 
     return r_data | b_data | g_data
 
-def generate_image_rom(infile, outfile="memories/image.memh"):
+# convert 24bit hex colors into 8bit format, RGB332
+def convert_24_to_8(color):
+    if (len(color) == 3):
+        r,g,b = color
+    else:
+        r,g,b,a = color
+        # treat rgb(0,0,0) as transparent
+        if (a == 0):
+            return 0
+    r_data = (r & MASK_3_BITS)
+    g_data = (g & MASK_3_BITS) // 8
+    b_data = (b & MASK_2_BITS) // 64
+
+    return r_data | b_data | g_data
+
+def generate_image_rom(infile, outfile="memories/image.memh", bits=8, downsample=1):
     # open the image and get the pixels
     # using pillow for this means almost any image file should work
     im = Image.open(infile)
+    w, h = im.size
+    # crop height around center
+    top = (h - 240) // 2
+    im = im.crop((0, top, w, top + 240))
     pixels = list(im.getdata())
     w, h = im.size
+    print((w,h))
+    
     # go through pixels and save to a file as hex
     print(f"Writing ili9341 display file for image to {outfile}.")
     # this could be replaced with a color table to compress the images
     # but for the sake of our MVP, that was out of scope
     with open(outfile, 'w') as f:
-        for col in range(w):
-            for row in range(h):
-                pixel = (row * w) + col
-                f.write("%04x\n" % convert_24_to_16(pixels[pixel]))
+        for col in range(w // downsample):
+            for row in range(h // downsample):
+                pixel = pixels[(row * downsample * w) + col * downsample]
+                if (bits == 8):
+                    pixel = convert_24_to_8(pixel)
+                    f.write("%02x\n" % pixel)
+                elif (bits == 16):
+                    pixel = convert_24_to_16(pixel)
+                    f.write("%04x\n" % pixel)
+
+def generate_gradient_rom(outfile="memories/grad.memh", bits=8, downsample=2):
+    w = 320
+    h = 240
+    # go through pixels and save to a file as hex
+    print(f"Writing gradient to {outfile}.")
+    with open(outfile, 'w') as f:
+        for col in range(w // downsample):
+            for row in range(h // downsample):
+                pixel = (row, col, 0)
+                if (bits == 8):
+                    pixel = convert_24_to_8(pixel)
+                    f.write("%02x\n" % pixel)
+                elif (bits == 16):
+                    pixel = convert_24_to_16(pixel)
+                    f.write("%04x\n" % pixel)
+
+def generate_bar_rom(outfile="memories/bars.memh", bars=2, bits=8, downsample=2):
+    w = 320
+    h = 240
+    # go through pixels and save to a file as hex
+    print(f"Writing bars to {outfile}.")
+    with open(outfile, 'w') as f:
+        for col in range(w // downsample):
+            for row in range(h // downsample):
+                wrap = w // downsample * (bars // 2);
+                if (col % wrap < wrap//2):
+                    pixel = (255,255,255)
+                else:
+                    pixel = (0,0,0)
+                if (bits == 8):
+                    pixel = convert_24_to_8(pixel)
+                    f.write("%02x\n" % pixel)
+                elif (bits == 16):
+                    pixel = convert_24_to_16(pixel)
+                    f.write("%04x\n" % pixel)
+
 
 
 _fibonacci_cache = {0: 0, 1: 1}
@@ -151,22 +216,29 @@ def generate_fibonacci_rom(fn="memories/fibonacci.memh"):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--memory', choices=['ili9341', 'fibonacci', 'image'])
+    parser.add_argument('--memory', choices=['ili9341', 'fibonacci', 'image', 'gradient', 'bars'])
     parser.add_argument('--file')
+    parser.add_argument('--bitdepth', choices=['8', '16'])
     parser.add_argument('--out')
+    parser.add_argument('--downsample')
+    parser.add_argument('--count')
 
     args = parser.parse_args()
     if not args.out:
         return
 
     if args.memory == 'image':
-        if not args.file:
+        if not args.file or not args.bitdepth:
             return
-        generate_image_rom(args.file, args.out)
+        generate_image_rom(args.file, args.out, int(args.bitdepth), int(args.downsample))
     elif args.memory == 'ili9341':
         generate_ili9341_rom(args.out)
     elif args.memory == 'fibonacci':
         generate_fibonacci_rom(fn=args.out)
+    elif args.memory == 'gradient':
+        generate_gradient_rom(args.out)
+    elif args.memory == 'bars':
+        generate_bar_rom(args.out, int(args.count))
 
 
 if __name__ == "__main__":
