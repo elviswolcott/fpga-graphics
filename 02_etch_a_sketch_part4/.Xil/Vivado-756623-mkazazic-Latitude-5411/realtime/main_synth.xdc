@@ -1,0 +1,7 @@
+set_property SRC_FILE_INFO {cfile:/home/mkazazic/Documents/comparch-workspace/fpga-graphics/02_etch_a_sketch_part4/main.xdc rfile:../../../main.xdc id:1} [current_design]
+set_property src_info {type:XDC file:1 line:3 export:INPUT save:INPUT read:READ} [current_design]
+create_clock -period 83.330 -name sys_clk_pin -waveform {0.000 41.660} -add [get_ports sysclk]
+set_property src_info {type:PI file:{} line:-1 export:INPUT save:INPUT read:READ} [current_design]
+create_generated_clock -name clk_feedback -source [get_pins MMCME2_BASE_inst/CLKIN1] -multiply_by 1 -duty_cycle 50.000 -add -master_clock [get_clocks sys_clk_pin] [get_pins MMCME2_BASE_inst/CLKFBOUT]
+set_property src_info {type:PI file:{} line:-1 export:INPUT save:INPUT read:READ} [current_design]
+create_generated_clock -name {pmod[0]} -source [get_pins MMCME2_BASE_inst/CLKIN1] -edges {1 2 3} -edge_shift {0.000 -33.522 -67.055} -add -master_clock [get_clocks sys_clk_pin] [get_pins MMCME2_BASE_inst/CLKOUT0]

@@ -20,10 +20,7 @@ parameter SYS_CLK_HZ = 12_000_000.0; // aka ticks per second
 parameter SYS_CLK_PERIOD_NS = (1_000_000_000.0/SYS_CLK_HZ);
 parameter CLK_HZ = 5*SYS_CLK_HZ; // aka ticks per second
 parameter CLK_PERIOD_NS = (1_000_000_000.0/CLK_HZ); // Approximation.
-parameter PWM_PERIOD_US = 100; 
-parameter PWM_WIDTH = $clog2(320);
 parameter PERIOD_MS_FADE = 100;
-parameter PWM_TICKS = CLK_HZ*PWM_PERIOD_US/1_000_000; //1kHz modulation frequency. // Always multiply before dividing, it avoids truncation.
 parameter human_divider = 23; // A clock divider parameter - 12 MHz / 2^23 is about 1 Hz (human visible speed).
 parameter DISPLAY_WIDTH = 240;
 parameter DISPLAY_HEIGHT = 320;
@@ -69,8 +66,6 @@ output wire display_csb, spi_clk, spi_mosi;
 input wire spi_miso;
 
 logic positive_direction; // positive direction being to the right
-
-ILI9341_color_t vram_wr_color;
 
 // Create a faster clock using internal PLL hardware.
 `ifdef SIMULATION
@@ -132,9 +127,6 @@ block_rom #(.INIT("memories/layer2.memh"), .W(VRAM_W), .L(LAYER_L)) LAYER_2 (
   .clk(clk), .addr(layer_2_rd_addr), .data(layer_2_data)
 );
 
-logic [2:0] rgb_inv;
-always_comb rgb = ~rgb_inv;
-
 wire [7:0] draw_color, bg_comp, fg_comp;
 
 // composite layers (just muxes)
@@ -142,38 +134,17 @@ composite BACKGROUND_COMPOSITOR(.color_top(layer_2_data), .color_bottom(BG_COLOR
 composite FOREGROUND_COMPOSITOR(.color_top(layer_0_data), .color_bottom(layer_1_data), .composited(fg_comp));
 composite FINAL_COMPOSITOR(.color_top(fg_comp), .color_bottom(bg_comp), .composited(draw_color));
 
-logic [$clog2(DISPLAY_WIDTH)-1:0] vram_x; // pixel to paint into buffer
-logic [$clog2(DISPLAY_HEIGHT)-1:0] vram_y;
+// copy composited pixels into VRAM
 
-// Put appropriate RAM clearing logic here!
-always_ff @(posedge clk) begin : ramClear
+always_ff @(posedge clk) begin : ramCopy
   if(rst) begin
     // set state to start clearing
     vram_clear_counter <= 0; // start over counter
-    vram_x <= 0;
-    vram_y <= 0;
     vram_state <= S_VRAM_UPDATING;
-  end
-  else if(vram_clear_counter >= VRAM_L) begin
-    // set state to stop clearing
-    //vram_state <= S_VRAM_ACTIVE;
   end
   // counter logic
   if(vram_state == S_VRAM_UPDATING) begin
     vram_clear_counter++; // update position in frame
-    // x and y helps do address translation
-    if(vram_x < ((DISPLAY_WIDTH>>1)-1)) begin
-      vram_x <= vram_x + 1;
-    end else begin
-      vram_x <= 0;
-      if (vram_y < ((DISPLAY_HEIGHT>>1)-1)) begin
-        vram_y <= vram_y + 1;
-      end else begin
-        vram_y <= 0;
-        // permamently stay in the painting state
-        //vram_state <= S_VRAM_ACTIVE;
-      end
-    end
   end
 end
 
@@ -252,8 +223,6 @@ always_comb begin : vramClearDraw
   // clear the screen
   if(vram_state == S_VRAM_UPDATING) begin
     vram_wr_ena = 1;
-    //vram_wr_ena = 0;
-    //layer_0_rd_addr = vram_x + (vram_y * (DISPLAY_WIDTH >> 1));
     // offset read location to shift in image
     layer_0_rd_addr = ((layer_0_offset * LAYER_HEIGHT) + vram_clear_counter) % LAYER_L;
     layer_1_rd_addr = ((layer_1_offset * LAYER_HEIGHT) + vram_clear_counter) % LAYER_L;
@@ -280,15 +249,6 @@ ft6206_controller #(.CLK_HZ(CLK_HZ), .I2C_CLK_HZ(100_000)) FT6206(
   .scl(touch_i2c_scl), .sda(touch_i2c_sda),
   .touch0(touch0), .touch1(touch1)
 );
-
-// LED PWM logic.
-logic [PWM_WIDTH-1:0] led_pwm0, led_pwm1;
-always @(posedge clk) begin
-  if(rst) begin
-    led_pwm0 <= 0;
-    led_pwm1 <= 0;
-  end
-end
 
 endmodule
 

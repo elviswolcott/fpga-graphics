@@ -8,20 +8,10 @@ VIVADO=vivado -mode batch -source
 ILI9341_SRCS=spi_controller.sv ili9341_display_controller.sv spi_types.sv ili9341_defines.sv block_rom.sv
 FT6206_SRCS=i2c_controller.sv ft6206_controller.sv i2c_types.sv ft6206_defines.sv 
 # Add any new source files needed for the final bitstream here
-MAIN_SRCS=main.sv pulse_generator.sv pwm.sv triangle_generator.sv block_ram.sv edge_detector.sv debouncer.sv led_example.sv ${ILI9341_SRCS} ${FT6206_SRCS}
+MAIN_SRCS=main.sv block_ram.sv edge_detector.sv debouncer.sv color_decompress.sv composite.sv ${ILI9341_SRCS} ${FT6206_SRCS}
 
 # Look up .PHONY rules for Makefiles
 .PHONY: clean submission remove_solutions
-
-test_pulse_generator: tests/test_pulse_generator.sv pulse_generator.sv
-	${IVERILOG} $^ -o test_pulse_generator.bin && ${VVP} test_pulse_generator.bin ${VVP_POST}
-
-test_pwm: tests/test_pwm.sv pulse_generator.sv pwm.sv
-	@echo "This might take a while, we're testing a lot of clock cycles!"
-	${IVERILOG} $^ -o test_pwm.bin && ${VVP} test_pwm.bin ${VVP_POST}
-
-test_triangle_generator: tests/test_triangle_generator.sv triangle_generator.sv
-	${IVERILOG} $^ -o test_triangle_generator.bin && ${VVP} test_triangle_generator.bin ${VVP_POST}
 
 test_spi_controller : tests/test_spi_controller.sv spi_controller.sv spi_defines.sv
 	${IVERILOG} $^ -o test_spi_controller.bin && ${VVP} test_spi_controller.bin ${VVP_POST}
